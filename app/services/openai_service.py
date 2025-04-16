@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import os
 import time
 import logging
+import openai
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -11,25 +12,53 @@ OPENAI_ASSISTANT_ID = os.getenv("OPENAI_ASSISTANT_ID")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 
+# --------------------------------------------------------------
+# Upload file
+# --------------------------------------------------------------
 def upload_file(path):
-    # Upload a file with an "assistants" purpose
-    file = client.files.create(
-        file=open("../../data/airbnb-faq.pdf", "rb"), purpose="assistants"
+    # Загружаем файл с целью использования в ассистенте
+    file = client.files.create(file=open(path, "rb"), purpose="assistants")
+    return file
+
+# Путь к файлу
+file_path = "C:\\whabot\\python-whatsapp-bot\\data\\airbnb-faq.pdf"
+uploaded_file = upload_file(file_path)
+
+# --------------------------------------------------------------
+# Create vector store and attach file
+# --------------------------------------------------------------
+def create_vector_store(file_path):
+    vector_store = client.vector_stores.create(name="Airbnb FAQ Vector Store")
+    
+    # Загружаем и индексируем файл в векторное хранилище
+    client.vector_stores.file_batches.upload_and_poll(
+        vector_store_id=vector_store.id,
+        files=[open(file_path, "rb")]
     )
+    return vector_store
 
+vector_store = create_vector_store(file_path)
 
-def create_assistant(file):
-    """
-    You currently cannot set the temperature for Assistant via the API.
-    """
+# --------------------------------------------------------------
+# Create assistant and connect vector store
+# --------------------------------------------------------------
+def create_assistant(vector_store_id):
     assistant = client.beta.assistants.create(
         name="WhatsApp AirBnb Assistant",
-        instructions="You're a helpful WhatsApp assistant that can assist guests that are staying in our Paris AirBnb. Use your knowledge base to best respond to customer queries. If you don't know the answer, say simply that you cannot help with question and advice to contact the host directly. Be friendly and funny.",
-        tools=[{"type": "retrieval"}],
-        model="gpt-4-1106-preview",
-        file_ids=[file.id],
+        instructions="You're a helpful WhatsApp assistant that can assist guests that are staying in our Paris AirBnb. Use your knowledge base to best respond to customer queries. If you don't know the answer, say simply that you cannot help with the question and advise to contact the host directly. Be friendly and funny.",
+        tools=[{"type": "file_search"}],
+        model="gpt-4o",
+        tool_resources={
+            "file_search": {
+                "vector_store_ids": [vector_store_id]
+            }
+        }
     )
     return assistant
+
+assistant = create_assistant(vector_store.id)
+
+print("Ассистент успешно создан! ID:", assistant.id)
 
 
 # Use context manager to ensure the shelf file is closed properly
@@ -67,26 +96,28 @@ def run_assistant(thread, name):
     logging.info(f"Generated message: {new_message}")
     return new_message
 
-
 def generate_response(message_body, wa_id, name):
     # Check if there is already a thread_id for the wa_id
     thread_id = check_if_thread_exists(wa_id)
 
-    # If a thread doesn't exist, create one and store it
-    if thread_id is None:
+    # Try to retrieve existing thread
+    thread = None
+    if thread_id:
+        try:
+            logging.info(f"Retrieving existing thread for {name} with wa_id {wa_id}")
+            thread = client.beta.threads.retrieve(thread_id)
+        except openai.NotFoundError:
+            logging.warning(f"Thread {thread_id} not found. Creating a new one.")
+            thread = client.beta.threads.create()
+            store_thread(wa_id, thread.id)  # Сохраняем новый thread_id
+    else:
         logging.info(f"Creating new thread for {name} with wa_id {wa_id}")
         thread = client.beta.threads.create()
         store_thread(wa_id, thread.id)
-        thread_id = thread.id
-
-    # Otherwise, retrieve the existing thread
-    else:
-        logging.info(f"Retrieving existing thread for {name} with wa_id {wa_id}")
-        thread = client.beta.threads.retrieve(thread_id)
 
     # Add message to thread
     message = client.beta.threads.messages.create(
-        thread_id=thread_id,
+        thread_id=thread.id,
         role="user",
         content=message_body,
     )
@@ -95,3 +126,4 @@ def generate_response(message_body, wa_id, name):
     new_message = run_assistant(thread, name)
 
     return new_message
+

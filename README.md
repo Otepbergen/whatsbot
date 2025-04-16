@@ -206,3 +206,5 @@ This document is provided to you by Datalumina. We help data analysts, engineers
 
 ## Tutorials
 For video tutorials, visit the YouTube channel: [youtube.com/@daveebbelaar](https://www.youtube.com/@daveebbelaar).
+#   w h a t s b o t  
+ 
